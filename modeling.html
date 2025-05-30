@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>3D Дисперсия в призме</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; }
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: #1e1e2f;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            z-index: 1;
+            color: #ffffff;
+            font-family: 'Segoe UI', sans-serif;
+            min-width: 250px;
+        }
+
+        .controls input[type="number"] {
+            width: 80px;
+            padding: 6px;
+            margin: 5px 0;
+            border: none;
+            border-radius: 5px;
+            background-color: #2c2c3c;
+            color: #fff;
+            font-size: 14px;
+        }
+
+        .controls input[type="number"]:focus {
+            outline: none;
+            background-color: #3c3c5c;
+        }
+
+        .controls button {
+            margin-top: 10px;
+            padding: 10px 20px;
+            background: linear-gradient(to right, #4e9af1, #367cfe);
+            color: white;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s ease, background 0.3s ease;
+        }
+
+        .controls button:hover {
+            transform: scale(1.05);
+            background: linear-gradient(to right, #5aafff, #4c8dff);
+        }
+
+        .controls button:active {
+            transform: scale(0.98);
+            background: linear-gradient(to right, #3b85e0, #2e6bd3);
+        }
+
+        #angles {
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid #555;
+            font-size: 13px;
+            color: #ccc;
+        }
+    </style>
+</head>
+<body>
+<div class="controls">
+    Угол призмы (φ): <input type="number" id="phi" value="30">°<br>
+    Показатель преломления (n): <input type="number" id="n" value="1.5" step="0.1"><br>
+    Расстояние до экрана: <input type="number" id="distance" value="5" step="0.5"><br>
+    Угол падения (α): <input type="number" id="alpha" value="30" step="1">°<br>
+    <button onclick="updateAll()">Обновить</button>
+    <div id="angles" style="margin-top: 10px; font-size: 12px;"></div>
+</div>
+<div id="error" style="display:none; position: absolute; top: 20px; right: 20px; background: rgba(255, 0, 0, 0.8); color: white; padding: 10px 20px; border-radius: 10px; font-family: 'Segoe UI', sans-serif; z-index: 1000;">
+    Ошибка вычислений: недопустимый угол/значение показателя преломления.
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+    let scene, camera, renderer, prism, screen, controls;
+    const rays = [];
+    const spectrumPoints = [];
+    let intersections = [];
+
+    const spectrumColors = [
+        { color: 0xff0000, lambda: 700 },
+        { color: 0xffa500, lambda: 600 },
+        { color: 0xffff00, lambda: 580 },
+        { color: 0x00ff00, lambda: 530 },
+        { color: 0x00ffff, lambda: 480 },
+        { color: 0x0000ff, lambda: 450 },
+        { color: 0x8a2be2, lambda: 400 }
+    ];
+
+    let alpha;
+
+    function init() {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 3, 10);
+        camera.lookAt(0, 0, 0);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 5, 5);
+        scene.add(dirLight);
+
+        const screenGeom = new THREE.PlaneGeometry(10, 10);
+        const screenMat = new THREE.MeshBasicMaterial({
+            color: 0x222222,
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.7
+        });
+        screen = new THREE.Mesh(screenGeom, screenMat);
+        screen.position.z = -5;
+        scene.add(screen);
+
+        updateAll();
+        animate();
+    }
+
+    function updateAll() {
+        const distance = parseFloat(document.getElementById('distance').value);
+        screen.position.z = -distance;
+        updatePrism();
+        const alphaDeg = parseFloat(document.getElementById('alpha').value);
+        alpha = THREE.MathUtils.degToRad(alphaDeg);
+        updateSpectrum();
+        updateSpectralCircle();
+    }
+
+    function updatePrism() {
+        if (prism) scene.remove(prism);
+
+        const phiDeg = parseFloat(document.getElementById('phi').value);
+        const phiRad = THREE.MathUtils.degToRad(phiDeg);
+
+        const baseLength = 2.0;
+        const depth = 1.0;
+
+        const halfBase = baseLength / 2;
+        const apexX = 0;
+        const apexY = (baseLength / 2) / Math.tan(phiRad / 2);
+
+        const vertices = [
+            new THREE.Vector3(-halfBase, 0, -depth / 2),
+            new THREE.Vector3(halfBase, 0, -depth / 2),
+            new THREE.Vector3(apexX, apexY, -depth / 2),
+            new THREE.Vector3(-halfBase, 0, depth / 2),
+            new THREE.Vector3(halfBase, 0, depth / 2),
+            new THREE.Vector3(apexX, apexY, depth / 2)
+        ];
+
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array([
+            ...vertices[0].toArray(), ...vertices[1].toArray(), ...vertices[2].toArray(),
+            ...vertices[5].toArray(), ...vertices[4].toArray(), ...vertices[3].toArray(),
+            ...vertices[0].toArray(), ...vertices[3].toArray(), ...vertices[2].toArray(),
+            ...vertices[2].toArray(), ...vertices[3].toArray(), ...vertices[5].toArray(),
+            ...vertices[2].toArray(), ...vertices[5].toArray(), ...vertices[1].toArray(),
+            ...vertices[1].toArray(), ...vertices[5].toArray(), ...vertices[4].toArray(),
+            ...vertices[0].toArray(), ...vertices[1].toArray(), ...vertices[3].toArray(),
+            ...vertices[1].toArray(), ...vertices[4].toArray(), ...vertices[3].toArray()
+        ]);
+
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setIndex([...Array(positions.length / 3).keys()]);
+        geometry.computeVertexNormals();
+        geometry.computeBoundingSphere();
+
+        const material = new THREE.MeshPhongMaterial({ color: 0xaaaaaa, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+        prism = new THREE.Mesh(geometry, material);
+
+        prism.rotation.y = Math.PI / 2;
+        console.log(prism)
+        scene.add(prism);
+    }
+
+    function updateSpectrum() {
+        const errorDiv = document.getElementById('error');
+        errorDiv.style.display = 'none';
+        errorDiv.textContent = '';
+        prism.updateMatrixWorld();
+        rays.forEach(r => scene.remove(r));
+        rays.length = 0;
+        intersections = [];
+
+        const phi = parseFloat(document.getElementById('phi').value) * Math.PI / 180;
+        const distance = parseFloat(document.getElementById('distance').value);
+        const n = parseFloat(document.getElementById('n').value);
+
+        const offset = 5;
+        const entryStart = new THREE.Vector3(0, -Math.tan(alpha) * offset / 2, offset);
+        const entryDir = new THREE.Vector3(0, Math.sin(alpha), -Math.cos(alpha)).normalize();
+        const entryCaster = new THREE.Raycaster(entryStart, entryDir);
+        const entryHits = entryCaster.intersectObject(prism);
+        const entryPoint = entryHits.length > 0 ? entryHits[0].point : new THREE.Vector3(0, 0.5, 0);
+        if (entryHits.length === 0) {
+            errorDiv.style.display = 'block';
+            errorDiv.textContent = 'Ошибка: Луч не пересекает призму.';
+            return;
+        }
+        createRay(entryStart, entryPoint, 0xffffff);
+
+        const epsilon = 1e-4;
+        spectrumColors.forEach(({ color, lambda }) => {
+            const n_lambda = n === 1 ? 1 : n + 3000 / (lambda * lambda);
+
+            if (n === 1) {
+                const exitDir = entryDir.clone().normalize();
+                const exitPoint = entryPoint.clone();
+                const screenZ = -parseFloat(document.getElementById('distance').value);
+                const t = (screenZ - exitPoint.z) / exitDir.z;
+                const screenIntersection = exitPoint.clone().add(exitDir.clone().multiplyScalar(t));
+                createRay(entryPoint, screenIntersection.clone(), color, 1);
+                intersections.push(screenIntersection);
+            } else {
+                const sin_beta = Math.sin(alpha) / n_lambda;
+                if (Math.abs(sin_beta) > 1) {
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                const beta = Math.asin(sin_beta);
+                const insideDir = new THREE.Vector3(0, -Math.sin(beta), -Math.cos(beta)).normalize();
+                const originInside = entryPoint.clone().add(insideDir.clone().multiplyScalar(epsilon));
+
+                const raycaster = new THREE.Raycaster(originInside, insideDir);
+                const hits = raycaster.intersectObject(prism);
+                if (hits.length === 0) {
+                    errorDiv.style.display = 'block';
+                    errorDiv.textContent = 'Ошибка: Внутренний луч не пересекает призму.';
+                    return;
+                }
+                let insideEnd;
+                if (hits.length > 1) insideEnd = hits[1].point;
+                else if (hits.length === 1) insideEnd = hits[0].point;
+                else insideEnd = originInside.clone().add(insideDir.clone().multiplyScalar(10));
+
+                createRay(entryPoint, insideEnd, color, 1);
+
+                const beta_in = Math.asin(sin_beta);
+                const sin_delta = n_lambda * Math.sin(phi - beta_in);
+                if (Math.abs(sin_delta) > 1) {
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                const delta = Math.asin(sin_delta);
+                const theta = alpha + delta - phi;
+                const exitDir = new THREE.Vector3(0, -Math.sin(theta), -Math.cos(theta)).normalize();
+                const exitPoint = insideEnd.clone();
+                const screenZ = -parseFloat(document.getElementById('distance').value);
+                const t = (screenZ - exitPoint.z) / exitDir.z;
+                const screenIntersection = exitPoint.clone().add(exitDir.clone().multiplyScalar(t));
+                createRay(exitPoint, screenIntersection.clone(), color, 1);
+                intersections.push(screenIntersection);
+            }
+        });
+
+        const anglesDiv = document.getElementById('angles');
+        let html = "<b>Углы отклонения (°):</b><br>";
+        spectrumColors.forEach(({ lambda }) => {
+            if (n === 1) {
+                html += `λ=${lambda} нм: 0.00°<br>`;
+            } else {
+                const n_lambda = n + 3000 / (lambda * lambda);
+                const sin_beta = Math.sin(alpha) / n_lambda;
+                if (Math.abs(sin_beta) > 1) {
+                    html += `λ=${lambda} нм: ошибка<br>`;
+                    return;
+                }
+                const beta_in = Math.asin(sin_beta);
+                const sin_delta = n_lambda * Math.sin(phi - beta_in);
+                if (Math.abs(sin_delta) > 1) {
+                    html += `λ=${lambda} нм: ошибка<br>`;
+                    return;
+                }
+                const delta = Math.asin(sin_delta);
+                const theta = alpha + delta - phi;
+                const thetaDeg = THREE.MathUtils.radToDeg(theta);
+                html += `λ=${lambda} нм: ${thetaDeg.toFixed(2)}°<br>`;
+            }
+        });
+        anglesDiv.innerHTML = html;
+    }
+
+    function updateSpectralCircle() {
+        spectrumPoints.forEach(p => scene.remove(p));
+        spectrumPoints.length = 0;
+
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+
+        intersections.forEach(pos => {
+            minX = Math.min(minX, pos.x);
+            maxX = Math.max(maxX, pos.x);
+            minY = Math.min(minY, pos.y);
+            maxY = Math.max(maxY, pos.y);
+        });
+
+        const paddingX = (maxX - minX) * 0.2 || 2;
+        const paddingY = (maxY - minY) * 0.2 || 2;
+
+        const width = Math.max((maxX - minX) + 2 * paddingX, 2);
+        const height = Math.max((maxY - minY) + 2 * paddingY, 2);
+
+        screen.geometry.dispose();
+        screen.geometry = new THREE.PlaneGeometry(width, height);
+        screen.position.x = (minX + maxX) / 2;
+        screen.position.y = (minY + maxY) / 2;
+        screen.position.z = -parseFloat(document.getElementById('distance').value);
+
+        intersections.forEach((pos, idx) => {
+            const { color } = spectrumColors[idx];
+            const geom = new THREE.SphereGeometry(0.05, 32, 32);
+            const mat = new THREE.MeshBasicMaterial({ color: color });
+            const pt = new THREE.Mesh(geom, mat);
+            pt.position.copy(pos);
+            pt.position.z += 0.01;
+            scene.add(pt);
+            spectrumPoints.push(pt);
+        });
+    }
+
+    function createRay(start, end, color, width=2) {
+        const geom = new THREE.BufferGeometry().setFromPoints([start, end]);
+        const mat = new THREE.LineBasicMaterial({ color: color, linewidth: width });
+        const ray = new THREE.Line(geom, mat);
+        scene.add(ray); rays.push(ray);
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth/window.innerHeight;
+        camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    init();
+</script>
+</body>
+</html>
